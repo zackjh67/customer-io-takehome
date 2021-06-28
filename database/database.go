@@ -2,8 +2,10 @@ package database
 
 import (
 	"database/sql"
-	"fmt"
 	"log"
+	"strconv"
+
+	"github.com/customerio/homework/serve"
 )
 
 type Customer_User struct {
@@ -13,6 +15,8 @@ type Customer_User struct {
 	LAST_NAME    string
 	IP           string
 	LAST_UPDATED int
+	EVENT_IDS    []uint8
+	EVENT_COUNT  int
 }
 
 type Event struct {
@@ -32,48 +36,78 @@ type AttributeChangeEvent struct {
 	TIMESTAMP int
 }
 
-type Database struct{}
-
-var db sql.DB
-
-func query(q string) sql.Result {
-	results, err := db.Exec(q)
-	if err != nil {
-		//handle the error
-		log.Fatal(err)
-	}
-	return results
+type Database struct {
+	db     *sql.DB
+	db_err error
 }
 
 func (d *Database) Construct(user string, pw string, host string) {
+	d.db = new(sql.DB)
 	conninfo := "user=" + user + " password=" + pw + " host=" + host + " sslmode=disable"
-	db, err := sql.Open("postgres", conninfo)
-	fmt.Println("database created????")
+	d.db, d.db_err = sql.Open("postgres", conninfo)
 
-	if err != nil {
-		fmt.Println("shit1")
-		log.Fatal(err)
+	if d.db_err != nil {
+		log.Fatal(d.db_err)
 	}
 	dbName := "testdb"
-	_, err = db.Exec("DROP DATABASE " + dbName + " WITH (FORCE)")
+	_, err := d.db.Exec("DROP DATABASE " + dbName + " WITH (FORCE)")
 	if err != nil {
 		//handle the error
 		log.Fatal(err)
 	}
-	_, err = db.Exec("create database " + dbName)
+	_, err = d.db.Exec("create database " + dbName)
+	if err != nil {
+		//handle the error
+		log.Fatal(err)
+	}
+
+	//  kill the tables manuially. I'm not sure why these don't simply die with the database :(
+	_, err = d.db.Exec("DROP TABLE IF EXISTS user_attr_updates")
+	if err != nil {
+		//handle the error
+		log.Fatal(err)
+	}
+	_, err = d.db.Exec("DROP TABLE IF EXISTS event")
+	if err != nil {
+		//handle the error
+		log.Fatal(err)
+	}
+	_, err = d.db.Exec("DROP TABLE IF EXISTS cust_user")
 	if err != nil {
 		//handle the error
 		log.Fatal(err)
 	}
 
 	// user table
-	query("CREATE TABLE IF NOT EXISTS cust_user (id BIGSERIAL PRIMARY KEY, created_at timestamp default current_timestamp, email text, first_name text, last_name text, ip text, last_updated timestamp default current_timestamp);")
+	_, err = d.db.Exec("CREATE TABLE IF NOT EXISTS cust_user (id BIGSERIAL PRIMARY KEY, created_at timestamp default current_timestamp, email text, first_name text, last_name text, ip text, last_updated integer);")
+	if err != nil {
+		//handle the error
+		log.Fatal(err)
+	}
 	// event table
-	query("CREATE TABLE IF NOT EXISTS event(id uuid PRIMARY KEY,type text,name text,user_id bigint references cust_user,data text,timestamp timestamp);")
+	_, err = d.db.Exec("CREATE TABLE IF NOT EXISTS event(id uuid PRIMARY KEY,type text,name text,user_id bigint references cust_user,data text,timestamp integer);")
+	if err != nil {
+		//handle the error
+		log.Fatal(err)
+	}
+
 	// attribute update table
-	query("CREATE TABLE IF NOT EXISTS user_attr_updates(id BIGSERIAL PRIMARY KEY, user_id bigint references cust_user, name text NOT NULL, value TEXT NOT NULL, created timestamp default current_timestamp);")
+	_, err = d.db.Exec("CREATE TABLE IF NOT EXISTS user_attr_updates(id BIGSERIAL PRIMARY KEY, user_id bigint references cust_user, name text NOT NULL, value TEXT, created timestamp default current_timestamp);")
+	if err != nil {
+		//handle the error
+		log.Fatal(err)
+	}
+
+	// drop them if they exist already for some reason
+	_, err = d.db.Exec(`
+	DROP TRIGGER IF EXISTS record_user_attribute_changes_after_insert ON cust_user;
+	DROP TRIGGER IF EXISTS record_user_attribute_changes_after_update ON cust_user;
+	DROP function IF EXISTS record_user_attribute_changes_function;`)
+	if err != nil {
+		log.Fatal(err)
+	}
 	// db trigger to update attribute update table when user values are changed/added
-	query(`
+	_, err = d.db.Exec(`
 	CREATE FUNCTION record_user_attribute_changes_function() RETURNS trigger
     AS $$
 BEGIN
@@ -123,59 +157,171 @@ FOR EACH ROW EXECUTE PROCEDURE record_user_attribute_changes_function();
 CREATE TRIGGER record_user_attribute_changes_after_update AFTER UPDATE ON cust_user
 FOR EACH ROW EXECUTE PROCEDURE record_user_attribute_changes_function();
 	`)
-
+	if err != nil {
+		//handle the error
+		log.Fatal(err)
+	}
 }
 
 // customer queries
-func (d Database) GetCustomerById(id int) sql.Result {
-	return query(fmt.Sprintf("SELECT * FROM cust_user WHERE id = %d", id))
+func (d Database) GetCustomerById(id int) (*serve.Customer, error) {
+	db_user := Customer_User{
+		ID:           4,
+		EMAIL:        "",
+		FIRST_NAME:   "",
+		LAST_NAME:    "",
+		IP:           "",
+		LAST_UPDATED: 0,
+		EVENT_IDS:    nil,
+		EVENT_COUNT:  0,
+	}
+	err := d.db.QueryRow(`
+	SELECT cust_user.id,
+		COALESCE(email, '') email,
+		COALESCE(first_name, '') first_name,
+		COALESCE(last_name, '') last_name,
+		COALESCE(ip, '') ip,
+		json_build_array(event.user_id) event_ids,
+		COUNT(event.id) event_count
+	FROM cust_user LEFT JOIN event ON event.user_id = cust_user.id WHERE cust_user.id = $1 GROUP BY cust_user.id, event.user_id;
+	`, id).Scan(&db_user.ID, &db_user.EMAIL, &db_user.FIRST_NAME, &db_user.LAST_NAME, &db_user.IP, &db_user.EVENT_IDS, &db_user.EVENT_COUNT)
+
+	attributes := map[string]string{
+		"email":        db_user.EMAIL,
+		"first_name":   db_user.FIRST_NAME,
+		"last_name":    db_user.LAST_NAME,
+		"ip":           db_user.IP,
+		"last_updated": string(db_user.LAST_UPDATED),
+	}
+	events := map[string]int{
+		"count": db_user.EVENT_COUNT,
+	}
+	formatted_user := serve.Customer{
+
+		ID:          db_user.ID,
+		Attributes:  attributes,
+		Events:      events,
+		LastUpdated: 0,
+	}
+	return &formatted_user, err
 }
 
-func (d Database) ListCustomers(page, count int) sql.Result {
-	return query("SELECT * FROM cust_user")
+// func (d Database) ListCustomers(page, count int) (sql.Result, error) {
+// 	return query("SELECT * FROM cust_user")
+// }
+// func (d Database) ListCustomers(page int, count int) (*serve.Customer, error) {
+// 	db_user := Customer_User{
+// 		ID:           4,
+// 		EMAIL:        "",
+// 		FIRST_NAME:   "",
+// 		LAST_NAME:    "",
+// 		IP:           "",
+// 		LAST_UPDATED: 0,
+// 		EVENT_IDS:    nil,
+// 		EVENT_COUNT:  0,
+// 	}
+// 	err := d.db.QueryRow(`
+// 	SELECT cust_user.id,
+// 		COALESCE(email, '') email,
+// 		COALESCE(first_name, '') first_name,
+// 		COALESCE(last_name, '') last_name,
+// 		COALESCE(ip, '') ip,
+// 		json_build_array(event.user_id) event_ids,
+// 		COUNT(event.id) event_count
+// 	FROM cust_user LEFT JOIN event ON event.user_id = cust_user.id WHERE cust_user.id = $1 GROUP BY cust_user.id, event.user_id;
+// 	`, id).Scan(&db_user.ID, &db_user.EMAIL, &db_user.FIRST_NAME, &db_user.LAST_NAME, &db_user.IP, &db_user.EVENT_IDS, &db_user.EVENT_COUNT)
+
+// 	attributes := map[string]string{
+// 		"id":           string(db_user.ID),
+// 		"email":        db_user.EMAIL,
+// 		"first_name":   db_user.FIRST_NAME,
+// 		"last_name":    db_user.LAST_NAME,
+// 		"ip":           db_user.IP,
+// 		"last_updated": string(db_user.LAST_UPDATED),
+// 	}
+// 	events := map[string]int{
+// 		"count": db_user.EVENT_COUNT,
+// 	}
+// 	formatted_user := serve.Customer{
+
+// 		ID:          db_user.ID,
+// 		Attributes:  attributes,
+// 		Events:      events,
+// 		LastUpdated: 0,
+// 	}
+// 	return &formatted_user, err
+// }
+
+func (d Database) CreateCustomer(id int, attributes map[string]string) (*serve.Customer, error) {
+	var createdId int
+	// TODO this is terrible but i dont have time to parse different kinds of dates and timestamps so here we are
+	attributes["last_updated"] = "0"
+	last_updated, parse_err := strconv.Atoi(attributes["last_updated"])
+	if parse_err != nil {
+		log.Fatal(parse_err)
+	}
+	err := d.db.QueryRow(`
+	INSERT INTO cust_user (id, email, first_name, last_name, ip, last_updated) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+		id, attributes["email"], attributes["first_name"], attributes["last_name"], attributes["ip"], last_updated).Scan(&createdId)
+	if err != nil {
+		log.Fatal(err)
+	}
+	return d.GetCustomerById(createdId)
 }
 
-func (m Database) CreateCustomer(c Customer_User) sql.Result {
-	return query(fmt.Sprintf("INSERT INTO cust_user (id, email, first_name, last_name, ip, last_updated) VALUES (%d, %v, %v, %v, %v, %d)",
-		c.ID, c.EMAIL, c.FIRST_NAME, c.LAST_NAME, c.IP, c.LAST_UPDATED))
+// func (d Database) UpdateCustomerById(c Customer_User) (sql.Result, error) {
+// 	return query(fmt.Sprintf("UPDATE cust_user SET (email, first_name, last_name, ip, last_updated) VALUES (%v, %v, %v, %v, %d) WHERE id = %d",
+// 		c.EMAIL, c.FIRST_NAME, c.LAST_NAME, c.IP, c.LAST_UPDATED, c.ID))
+// }
+
+func (d Database) UpdateCustomerById(id int, attributes map[string]string) (*serve.Customer, error) {
+	_, err := d.db.Exec(`
+	UPDATE cust_user SET (email, first_name, last_name, ip) = ($1, $2, $3, $4) WHERE cust_user.id = $5`,
+		attributes["email"], attributes["first_name"], attributes["last_name"], attributes["ip"], id)
+
+	if err != nil {
+		log.Fatal(err)
+	}
+	return d.GetCustomerById(id)
 }
 
-func (m Database) UpdateCustomerById(c Customer_User) sql.Result {
-	return query(fmt.Sprintf("UPDATE cust_user SET (email, first_name, last_name, ip, last_updated) VALUES (%v, %v, %v, %v, %d) WHERE id = %d",
-		c.EMAIL, c.FIRST_NAME, c.LAST_NAME, c.IP, c.LAST_UPDATED, c.ID))
+// func (d Database) DeleteCustomer(id int) (sql.Result, error) {
+// 	return query(fmt.Sprintf("DELETE FROM cust_user WHERE id = %d", id))
+// }
+
+// func (d Database) GetTotalCustomers() (sql.Result, error) {
+// 	return query("SELECT COUNT(id) FROM cust_user")
+// }
+
+// // event queries
+// func (d Database) GetEventById(id string) (sql.Result, error) {
+// 	return query(fmt.Sprintf("SELECT * FROM event WHERE id = %v", id))
+// }
+
+// func (d Database) ListEvents(page, count int) (sql.Result, error) {
+// 	return query("SELECT * FROM event")
+// }
+
+func (d Database) CreateEvent(e Event) (int, error) {
+	var createdId int
+	err := d.db.QueryRow(`
+	INSERT INTO event (id, type, name, user_id, data, timestamp) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+		e.ID, e.TYPE, e.NAME, e.USER_ID, e.DATA, e.TIMESTAMP).Scan(&createdId)
+	if err != nil {
+		log.Fatal(err)
+	}
+	return createdId, err
 }
 
-func (m Database) DeleteCustomer(id int) sql.Result {
-	return query(fmt.Sprintf("DELETE FROM cust_user WHERE id = %d", id))
-}
+// // attribute change queries
+// func (d Database) GetAttributeEventById(id int) (sql.Result, error) {
+// 	return query(fmt.Sprintf("SELECT * FROM user_attr_updates WHERE id = %d", id))
+// }
 
-func (m Database) GetTotalCustomers() sql.Result {
-	return query("SELECT COUNT(id) FROM cust_user")
-}
+// func (d Database) GetAttributeEventsByUserId(id int) (sql.Result, error) {
+// 	return query(fmt.Sprintf("SELECT * FROM user_attr_updates WHERE user_id = %d", id))
+// }
 
-// event queries
-func (d Database) GetEventById(id string) sql.Result {
-	return query(fmt.Sprintf("SELECT * FROM event WHERE id = %v", id))
-}
-
-func (d Database) ListEvents(page, count int) sql.Result {
-	return query("SELECT * FROM event")
-}
-
-func (m Database) CreateEvent(e Event) sql.Result {
-	return query(fmt.Sprintf("INSERT INTO event (id, type, name, user_id, data, timestamp) VALUES (%v, %v, %v, %d, %v, %d)",
-		e.ID, e.TYPE, e.NAME, e.USER_ID, e.DATA, e.TIMESTAMP))
-}
-
-// attribute change queries
-func (d Database) GetAttributeEventById(id int) sql.Result {
-	return query(fmt.Sprintf("SELECT * FROM user_attr_updates WHERE id = %d", id))
-}
-
-func (d Database) GetAttributeEventsByUserId(id int) sql.Result {
-	return query(fmt.Sprintf("SELECT * FROM user_attr_updates WHERE user_id = %d", id))
-}
-
-func (d Database) ListAttributeEvents() sql.Result {
-	return query("SELECT * FROM user_attr_updates")
-}
+// func (d Database) ListAttributeEvents() (sql.Result, error) {
+// 	return query("SELECT * FROM user_attr_updates")
+// }

@@ -22,9 +22,10 @@ func (s server) Get(c echo.Context) error {
 		return err
 	}
 
-	response := struct {
-		Customer *Customer `json:"customer"`
-	}{customer}
+	// response := struct {
+	// 	Customer *Customer `json:"customer"`
+	// }{customer}
+	response := customer
 
 	return c.JSON(http.StatusOK, response)
 }
