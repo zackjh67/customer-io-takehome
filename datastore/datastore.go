@@ -21,7 +21,7 @@ func (d Datastore) Get(id int) (*serve.Customer, error) {
 }
 
 func (d Datastore) List(page, count int) ([]*serve.Customer, error) {
-	return nil, errors.New("unimplemented")
+	return d.DB.ListCustomers(page, count)
 }
 
 func (d Datastore) Create(id int, attributes map[string]string) (*serve.Customer, error) {

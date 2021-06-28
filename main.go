@@ -28,7 +28,7 @@ func main() {
 		cancel()
 	}()
 
-	file, err := os.Open("data/messages.2.data")
+	file, err := os.Open("data/messages.1.data")
 
 	ds := new(datastore.Datastore)
 	ds.Construct()

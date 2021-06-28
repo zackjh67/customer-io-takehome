@@ -209,48 +209,67 @@ func (d Database) GetCustomerById(id int) (*serve.Customer, error) {
 // func (d Database) ListCustomers(page, count int) (sql.Result, error) {
 // 	return query("SELECT * FROM cust_user")
 // }
-// func (d Database) ListCustomers(page int, count int) (*serve.Customer, error) {
-// 	db_user := Customer_User{
-// 		ID:           4,
-// 		EMAIL:        "",
-// 		FIRST_NAME:   "",
-// 		LAST_NAME:    "",
-// 		IP:           "",
-// 		LAST_UPDATED: 0,
-// 		EVENT_IDS:    nil,
-// 		EVENT_COUNT:  0,
-// 	}
-// 	err := d.db.QueryRow(`
-// 	SELECT cust_user.id,
-// 		COALESCE(email, '') email,
-// 		COALESCE(first_name, '') first_name,
-// 		COALESCE(last_name, '') last_name,
-// 		COALESCE(ip, '') ip,
-// 		json_build_array(event.user_id) event_ids,
-// 		COUNT(event.id) event_count
-// 	FROM cust_user LEFT JOIN event ON event.user_id = cust_user.id WHERE cust_user.id = $1 GROUP BY cust_user.id, event.user_id;
-// 	`, id).Scan(&db_user.ID, &db_user.EMAIL, &db_user.FIRST_NAME, &db_user.LAST_NAME, &db_user.IP, &db_user.EVENT_IDS, &db_user.EVENT_COUNT)
+func (d Database) ListCustomers(page int, count int) ([]*serve.Customer, error) {
+	rows, err := d.db.Query(`
+	SELECT cust_user.id,
+		COALESCE(email, '') email,
+		COALESCE(first_name, '') first_name,
+		COALESCE(last_name, '') last_name,
+		COALESCE(ip, '') ip,
+		json_build_array(event.user_id) event_ids,
+		COUNT(event.id) event_count
+	FROM cust_user LEFT JOIN event ON event.user_id = cust_user.id GROUP BY cust_user.id, event.user_id;
+	`)
 
-// 	attributes := map[string]string{
-// 		"id":           string(db_user.ID),
-// 		"email":        db_user.EMAIL,
-// 		"first_name":   db_user.FIRST_NAME,
-// 		"last_name":    db_user.LAST_NAME,
-// 		"ip":           db_user.IP,
-// 		"last_updated": string(db_user.LAST_UPDATED),
-// 	}
-// 	events := map[string]int{
-// 		"count": db_user.EVENT_COUNT,
-// 	}
-// 	formatted_user := serve.Customer{
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer rows.Close()
 
-// 		ID:          db_user.ID,
-// 		Attributes:  attributes,
-// 		Events:      events,
-// 		LastUpdated: 0,
-// 	}
-// 	return &formatted_user, err
-// }
+	customers := []*serve.Customer{}
+
+	for rows.Next() {
+		db_user := &Customer_User{
+			ID:           0,
+			EMAIL:        "",
+			FIRST_NAME:   "",
+			LAST_NAME:    "",
+			IP:           "",
+			LAST_UPDATED: 0,
+			EVENT_IDS:    nil,
+			EVENT_COUNT:  0,
+		}
+		err := rows.Scan(&db_user.ID, &db_user.EMAIL, &db_user.FIRST_NAME, &db_user.LAST_NAME, &db_user.IP, &db_user.EVENT_IDS, &db_user.EVENT_COUNT)
+		if err != nil {
+			log.Fatal(err)
+		}
+		attributes := map[string]string{
+			"id":           string(db_user.ID),
+			"email":        db_user.EMAIL,
+			"first_name":   db_user.FIRST_NAME,
+			"last_name":    db_user.LAST_NAME,
+			"ip":           db_user.IP,
+			"last_updated": string(db_user.LAST_UPDATED),
+		}
+		events := map[string]int{
+			"count": db_user.EVENT_COUNT,
+		}
+		formatted_user := serve.Customer{
+
+			ID:          db_user.ID,
+			Attributes:  attributes,
+			Events:      events,
+			LastUpdated: 0,
+		}
+		customers = append(customers, &formatted_user)
+
+	}
+	err = rows.Err()
+	if err != nil {
+		log.Fatal(err)
+	}
+	return customers, err
+}
 
 func (d Database) CreateCustomer(id int, attributes map[string]string) (*serve.Customer, error) {
 	var createdId int

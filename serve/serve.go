@@ -31,7 +31,7 @@ func ListenAndServe(address string, datastore Datastore) error {
 	e.Use(middleware.CORS())
 
 	// Routes
-	// e.GET("/customers", s.List)
+	e.GET("/customers", s.List)
 	// e.POST("/customers", s.Create)
 	e.GET("/customers/:id", s.Get)
 	// e.PATCH("/customers/:id", s.Update)
