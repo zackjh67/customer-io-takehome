@@ -2,10 +2,12 @@ package database
 
 import (
 	"database/sql"
+	"encoding/json"
 	"log"
 	"strconv"
 
 	"github.com/customerio/homework/serve"
+	"github.com/google/uuid"
 )
 
 type Customer_User struct {
@@ -15,8 +17,9 @@ type Customer_User struct {
 	LAST_NAME    string
 	IP           string
 	LAST_UPDATED int
-	EVENT_IDS    []uint8
+	EVENTS       map[string]int
 	EVENT_COUNT  int
+	STR          string
 }
 
 type Event struct {
@@ -24,7 +27,7 @@ type Event struct {
 	TYPE      string
 	NAME      string
 	USER_ID   int
-	DATA      string
+	DATA      map[string]string
 	TIMESTAMP int
 }
 
@@ -85,7 +88,7 @@ func (d *Database) Construct(user string, pw string, host string) {
 		log.Fatal(err)
 	}
 	// event table
-	_, err = d.db.Exec("CREATE TABLE IF NOT EXISTS event(id uuid PRIMARY KEY,type text,name text,user_id bigint references cust_user,data text,timestamp integer);")
+	_, err = d.db.Exec("CREATE TABLE IF NOT EXISTS event(id uuid PRIMARY KEY,type text,name text,user_id bigint,data text,timestamp integer);")
 	if err != nil {
 		//handle the error
 		log.Fatal(err)
@@ -165,26 +168,27 @@ FOR EACH ROW EXECUTE PROCEDURE record_user_attribute_changes_function();
 
 // customer queries
 func (d Database) GetCustomerById(id int) (*serve.Customer, error) {
-	db_user := Customer_User{
-		ID:           4,
-		EMAIL:        "",
-		FIRST_NAME:   "",
-		LAST_NAME:    "",
-		IP:           "",
-		LAST_UPDATED: 0,
-		EVENT_IDS:    nil,
-		EVENT_COUNT:  0,
-	}
+	db_user := Customer_User{}
+
+	var arrStr string
+
 	err := d.db.QueryRow(`
+	WITH user_events AS (
+		SELECT COALESCE(type, name) p, COUNT(type) + COUNT(name) j
+		FROM event WHERE user_id = $1 AND type = 'attributes' OR name IS NOT NULL GROUP BY event.type, event.name
+	), json AS (
+		SELECT json_object_agg(p, j) FROM user_events
+	)
 	SELECT cust_user.id,
-		COALESCE(email, '') email,
-		COALESCE(first_name, '') first_name,
-		COALESCE(last_name, '') last_name,
-		COALESCE(ip, '') ip,
-		json_build_array(event.user_id) event_ids,
-		COUNT(event.id) event_count
-	FROM cust_user LEFT JOIN event ON event.user_id = cust_user.id WHERE cust_user.id = $1 GROUP BY cust_user.id, event.user_id;
-	`, id).Scan(&db_user.ID, &db_user.EMAIL, &db_user.FIRST_NAME, &db_user.LAST_NAME, &db_user.IP, &db_user.EVENT_IDS, &db_user.EVENT_COUNT)
+		   COALESCE(email, '') email,
+		   COALESCE(first_name, '') first_name,
+		   COALESCE(last_name, '') last_name,
+		   COALESCE(ip, '') ip,
+		   COALESCE((SELECT * FROM json), json_build_object()) events
+	FROM cust_user
+		LEFT JOIN event ON event.user_id = cust_user.id
+	WHERE cust_user.id = $1 GROUP BY cust_user.id;
+	`, id).Scan(&db_user.ID, &db_user.EMAIL, &db_user.FIRST_NAME, &db_user.LAST_NAME, &db_user.IP, &arrStr)
 
 	attributes := map[string]string{
 		"email":        db_user.EMAIL,
@@ -193,22 +197,26 @@ func (d Database) GetCustomerById(id int) (*serve.Customer, error) {
 		"ip":           db_user.IP,
 		"last_updated": string(db_user.LAST_UPDATED),
 	}
-	events := map[string]int{
-		"count": db_user.EVENT_COUNT,
+
+	mip := map[string]int{}
+
+	if len(arrStr) > 0 {
+		errrrrr := json.Unmarshal([]byte(arrStr), &mip)
+		if errrrrr != nil {
+			log.Fatal(errrrrr)
+		}
 	}
+
 	formatted_user := serve.Customer{
 
 		ID:          db_user.ID,
 		Attributes:  attributes,
-		Events:      events,
+		Events:      mip,
 		LastUpdated: 0,
 	}
 	return &formatted_user, err
 }
 
-// func (d Database) ListCustomers(page, count int) (sql.Result, error) {
-// 	return query("SELECT * FROM cust_user")
-// }
 func (d Database) ListCustomers(page int, count int) ([]*serve.Customer, error) {
 	rows, err := d.db.Query(`
 	SELECT cust_user.id,
@@ -236,10 +244,10 @@ func (d Database) ListCustomers(page int, count int) ([]*serve.Customer, error) 
 			LAST_NAME:    "",
 			IP:           "",
 			LAST_UPDATED: 0,
-			EVENT_IDS:    nil,
+			EVENTS:       map[string]int{},
 			EVENT_COUNT:  0,
 		}
-		err := rows.Scan(&db_user.ID, &db_user.EMAIL, &db_user.FIRST_NAME, &db_user.LAST_NAME, &db_user.IP, &db_user.EVENT_IDS, &db_user.EVENT_COUNT)
+		err := rows.Scan(&db_user.ID, &db_user.EMAIL, &db_user.FIRST_NAME, &db_user.LAST_NAME, &db_user.IP, &db_user.EVENTS, &db_user.EVENT_COUNT)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -316,18 +324,47 @@ func (d Database) UpdateCustomerById(id int, attributes map[string]string) (*ser
 // func (d Database) GetEventById(id string) (sql.Result, error) {
 // 	return query(fmt.Sprintf("SELECT * FROM event WHERE id = %v", id))
 // }
+func (d Database) GetEventById(id string) (Event, error) {
+	uuid_id, err := uuid.Parse(id)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	e := Event{}
+
+	// TODO parse through data and timestamp too sometime
+	err = d.db.QueryRow(`SELECT id, type, name, user_id FROM event WHERE id = $1`,
+		uuid_id).Scan(&e.ID, &e.TYPE, &e.NAME, &e.USER_ID)
+
+	return e, err
+}
 
 // func (d Database) ListEvents(page, count int) (sql.Result, error) {
 // 	return query("SELECT * FROM event")
 // }
 
-func (d Database) CreateEvent(e Event) (int, error) {
-	var createdId int
-	err := d.db.QueryRow(`
-	INSERT INTO event (id, type, name, user_id, data, timestamp) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
-		e.ID, e.TYPE, e.NAME, e.USER_ID, e.DATA, e.TIMESTAMP).Scan(&createdId)
+func (d Database) CreateEvent(e Event) (string, error) {
+	var createdId string
+
+	// do nothing for now if the event already exists
+	_, err := d.GetEventById(e.ID)
 	if err != nil {
-		log.Fatal(err)
+		data, err := json.Marshal(e.DATA)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		uuid_id, err := uuid.Parse(e.ID)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		err = d.db.QueryRow(`
+	INSERT INTO event (id, type, name, user_id, data, timestamp) VALUES ($1::uuid, $2, $3, $4, $5, $6) RETURNING id`,
+			&uuid_id, &e.TYPE, &e.NAME, &e.USER_ID, &data, &e.TIMESTAMP).Scan(&createdId)
+		if err != nil {
+			log.Fatal(err)
+		}
 	}
 	return createdId, err
 }

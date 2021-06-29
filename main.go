@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"syscall"
 
+	"github.com/customerio/homework/database"
 	"github.com/customerio/homework/datastore"
 	"github.com/customerio/homework/serve"
 	"github.com/customerio/homework/stream"
@@ -42,10 +43,37 @@ func main() {
 		if i%1000 == 0 {
 			fmt.Println(i, " lines parsed....")
 		}
+
+		var e database.Event
+		user_id, parse_err := strconv.Atoi(rec.UserID)
+		if parse_err != nil {
+			e = database.Event{
+				ID:        rec.ID,
+				TYPE:      rec.Type,
+				NAME:      rec.Name,
+				DATA:      rec.Data,
+				TIMESTAMP: int(rec.Timestamp),
+			}
+		} else {
+			e = database.Event{
+				ID:        rec.ID,
+				TYPE:      rec.Type,
+				NAME:      rec.Name,
+				USER_ID:   user_id,
+				DATA:      rec.Data,
+				TIMESTAMP: int(rec.Timestamp),
+			}
+		}
+
+		ds.DB.CreateEvent(
+			e,
+		)
+
+		// create/update users
 		// user_id is a foreign key so itll break if I don't check to make sure user_id exists
 		// TODO fix that ^
 		if rec.UserID != "" {
-			user_id, parse_err := strconv.Atoi(rec.UserID)
+			user_id, parse_err = strconv.Atoi(rec.UserID)
 			if parse_err != nil {
 				log.Fatal(parse_err)
 			}
