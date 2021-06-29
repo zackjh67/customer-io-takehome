@@ -223,9 +223,7 @@ func (d Database) ListCustomers(page int, count int) ([]*serve.Customer, error) 
 		COALESCE(email, '') email,
 		COALESCE(first_name, '') first_name,
 		COALESCE(last_name, '') last_name,
-		COALESCE(ip, '') ip,
-		json_build_array(event.user_id) event_ids,
-		COUNT(event.id) event_count
+		COALESCE(ip, '') ip
 	FROM cust_user LEFT JOIN event ON event.user_id = cust_user.id GROUP BY cust_user.id, event.user_id;
 	`)
 
@@ -247,7 +245,7 @@ func (d Database) ListCustomers(page int, count int) ([]*serve.Customer, error) 
 			EVENTS:       map[string]int{},
 			EVENT_COUNT:  0,
 		}
-		err := rows.Scan(&db_user.ID, &db_user.EMAIL, &db_user.FIRST_NAME, &db_user.LAST_NAME, &db_user.IP, &db_user.EVENTS, &db_user.EVENT_COUNT)
+		err := rows.Scan(&db_user.ID, &db_user.EMAIL, &db_user.FIRST_NAME, &db_user.LAST_NAME, &db_user.IP)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -259,14 +257,10 @@ func (d Database) ListCustomers(page int, count int) ([]*serve.Customer, error) 
 			"ip":           db_user.IP,
 			"last_updated": string(db_user.LAST_UPDATED),
 		}
-		events := map[string]int{
-			"count": db_user.EVENT_COUNT,
-		}
 		formatted_user := serve.Customer{
 
 			ID:          db_user.ID,
 			Attributes:  attributes,
-			Events:      events,
 			LastUpdated: 0,
 		}
 		customers = append(customers, &formatted_user)

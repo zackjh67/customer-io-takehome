@@ -1,14 +1,12 @@
 package serve
 
 import (
-	"fmt"
 	"net/http"
 
 	"github.com/labstack/echo"
 )
 
 func (s server) List(c echo.Context) error {
-	fmt.Println("LSTING LOLLLLLLL")
 	page := 1
 	perPage := 25
 
