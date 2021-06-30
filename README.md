@@ -33,6 +33,7 @@ I am most familiar with Angular and can set an app up the quickest as well as ha
 * Build out better types for payloads and such
 * Explore different packages that probably make some of the difficult and mundaine things about Golang easy
 * Pagination
+* Tests
 
 ### Frontend
 * Actual UI lol
@@ -44,3 +45,4 @@ I am most familiar with Angular and can set an app up the quickest as well as ha
 * Banner component
 * Main menu component maybe
 * Any kind of styling/scss (I promise I know how lol)
+* Tests that aren't just the generated Angular ones!
